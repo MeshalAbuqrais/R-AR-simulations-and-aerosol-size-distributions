@@ -13,7 +13,7 @@ This repository contains code for simulations in hyperbolic geometry and an aero
 - `aerosol app/`  
   This folder contains the aerosol size-distribution application, including data processing, lognormal parameter extraction, modelling, and visualisation outputs.
 
-## Author
+## Authors
 
 Meshal Abuqrais
 
