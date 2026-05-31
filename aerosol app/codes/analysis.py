@@ -76,6 +76,7 @@ def estimate_window(subset: pd.DataFrame):
 
     return mu_hat, phi_hat, last_pt
 
+
 def predict_k_steps(mu_hat, phi_hat, last_point, k_steps):
     preds = []
     current = last_point.copy()
@@ -88,9 +89,9 @@ def predict_k_steps(mu_hat, phi_hat, last_point, k_steps):
     return np.vstack(preds)
 
 
-def get_actuals_and_distances(future_df, preds, k_steps):
+def get_true_params_and_errors(future_df, preds, k_steps):
     actual_params, actual_dates, dists = [], [], []
-    x_actual, y_actual = [], []
+
     for i in range(k_steps):
         if i >= len(future_df):
             actual_params.append((None, None))
@@ -108,10 +109,7 @@ def get_actuals_and_distances(future_df, preds, k_steps):
         dist = FR_DISTANCE_SCALE * float(metric.dist(preds[i], actual_point))
         dists.append(dist)
 
-        x_actual.append(amu / np.sqrt(2))
-        y_actual.append(asig)
-
-    return actual_params, actual_dates, dists, np.array(x_actual), np.array(y_actual)
+    return actual_params, actual_dates, dists
 
 
 # ======================================================
@@ -132,7 +130,7 @@ def fisherrao_predict(df, start_date, window_size, k_steps):
     mu_pred, sigma_pred = x_pred * np.sqrt(2), y_pred
 
     future = df[df["Date"] > end_date].head(k_steps)
-    actual_params, actual_dates, dists, _, _ = get_actuals_and_distances(future, preds, k_steps)
+    actual_params, actual_dates, dists = get_true_params_and_errors(future, preds, k_steps)
 
     return mu_pred, sigma_pred, actual_params, actual_dates, dists, end_date
 
@@ -152,7 +150,7 @@ def compute_forecast_errors(df, valid_indices, L_est, L_pred):
         if len(future) < L_pred:
             continue
 
-        _, _, dists, _, _ = get_actuals_and_distances(future, preds, L_pred)
+        _, _, dists = get_true_params_and_errors(future, preds, L_pred)
         errors.extend(dists)
 
     return errors
@@ -205,6 +203,7 @@ def extract_phi_timelines(df, start_date="2022-03-01"):
             phi_dates[L_est].append(date_val)
     return phi_series, phi_dates
 
+
 # ======================================================
 # Lognormal PDF
 # ======================================================
@@ -234,19 +233,25 @@ def plot_boxplots(results, save_path=None):
 
 
 def plot_phi_timelines(phi_series, phi_dates, save_path=None):
-    plt.figure(figsize=(12, 6))
+    fig, ax = plt.subplots(figsize=(12, 6), constrained_layout=True)
     colors = {14: "tab:blue", 30: "tab:orange", 60: "tab:green"}
 
     for L_est in sorted(phi_series.keys()):
-        plt.plot(phi_dates[L_est], phi_series[L_est], label=f"L_est={L_est}",
-                 color=colors[L_est], linewidth=1.8)
+        ax.plot(phi_dates[L_est], phi_series[L_est], label=f"L_est={L_est}",
+                color=colors[L_est], linewidth=1.8)
 
-    plt.axhline(1.0, color="grey", linestyle="--", alpha=0.6)
-    plt.ylabel("φ")
-    plt.title("φ for different estimation window sizes")
-    plt.grid(alpha=0.3)
-    plt.legend()
-    plt.tight_layout()
+    ax.axhline(1.0, color="grey", linestyle="--", alpha=0.6)
+    ax.set_ylabel("φ")
+    ax.set_title("φ for different estimation window sizes", pad=30)
+    ax.grid(alpha=0.3)
+
+    fig.legend(
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.05),
+        ncol=3,
+        fontsize=12,
+        frameon=False
+    )
 
     if save_path is not None:
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
@@ -261,17 +266,24 @@ def plot_all_predictions_3x5(pred_list, save_path=None):
     fig, axes = plt.subplots(rows, cols, figsize=(5 * cols, 3 * rows), sharey=True, constrained_layout=True)
     axes = axes.flatten()
 
+    legend_handles = {}
     panel = 0
+
     for (mu_pred, sigma_pred, actual_params, actual_dates, dists, end_date) in pred_list:
         for i in range(5):
             ax = axes[panel]
             pdf_pred = lognormal_pdf(D, mu_pred[i], sigma_pred[i])
-            ax.plot(D, pdf_pred, "--", color="green", label="Predicted")
+            line_pred, = ax.plot(D, pdf_pred, "--", color="green", label="Predicted")
 
             muA, sA = actual_params[i]
             if muA is not None:
                 pdf_actual = lognormal_pdf(D, muA, sA)
-                ax.plot(D, pdf_actual, color="black", label="Actual")
+                line_actual, = ax.plot(D, pdf_actual, color="black", label="Observed")
+
+            legend_handles["Predicted"] = line_pred
+            if muA is not None:
+                legend_handles["Observed"] = line_actual
+
             date_str = actual_dates[i].strftime("%Y-%m-%d") if actual_dates[i] is not None else f"step {i + 1}"
 
             if not np.isnan(dists[i]):
@@ -279,16 +291,23 @@ def plot_all_predictions_3x5(pred_list, save_path=None):
             else:
                 title_text = date_str
 
-            ax.set_title(title_text, fontsize=9)
+            ax.set_title(title_text, fontsize=12)
             ax.grid(alpha=0.3)
             ax.set_xlim(0, 250)
 
-            if panel == 0:
-                ax.legend(fontsize=8)
             panel += 1
 
     fig.supylabel("PDF")
     fig.supxlabel("Diameter")
+
+    fig.legend(
+        legend_handles.values(), legend_handles.keys(),
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.03),
+        ncol=2,
+        fontsize=12,
+        frameon=False
+    )
 
     if save_path is not None:
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
@@ -327,7 +346,10 @@ def plot_upper_half_plane_predictions(df, prediction_windows, save_path=None):
         x_pred, y_pred = hyperboloid_to_upper(preds)
 
         future = df[df["Date"] > end_date].head(k_steps)
-        _, _, _, x_actual, y_actual = get_actuals_and_distances(future, preds, k_steps)
+        actual_params, _, _ = get_true_params_and_errors(future, preds, k_steps)
+        valid_params = [p for p in actual_params if p[0] is not None]
+        x_actual = np.array([p[0] / np.sqrt(2) for p in valid_params])
+        y_actual = np.array([p[1] for p in valid_params])
 
         all_y_ax = np.concatenate([y_pred, y_actual]) if len(x_actual) > 0 else y_pred
         global_y_min, global_y_max = min(global_y_min, all_y_ax.min()), max(global_y_max, all_y_ax.max())
@@ -336,7 +358,7 @@ def plot_upper_half_plane_predictions(df, prediction_windows, save_path=None):
         ax.axhline(0, color="black", linewidth=1.0, alpha=0.5)
 
         if len(x_actual) > 0:
-            ax.scatter(x_actual, y_actual, color="tab:blue", marker="o", s=70, zorder=5, label="True")
+            ax.scatter(x_actual, y_actual, color="tab:blue", marker="o", s=70, zorder=5, label="Observed")
             for i in range(len(x_actual)):
                 y_offset = 15 if i % 2 == 0 else -20
                 ax.annotate(
@@ -375,12 +397,13 @@ def plot_upper_half_plane_predictions(df, prediction_windows, save_path=None):
     fig.legend(
         legend_handles.values(), legend_handles.keys(),
         loc="upper center", bbox_to_anchor=(0.5, 1.08),
-        ncol=3, fontsize=10, frameon=False
+        ncol=3, fontsize=12, frameon=False
     )
 
     if save_path is not None:
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.show()
+
 
 # ======================================================
 # MAIN EXECUTION
