@@ -213,7 +213,7 @@ def lognormal_pdf(D, mu, sigma):
 
 
 # ======================================================
-# Visualizations
+# Visualisations
 # ======================================================
 def plot_boxplots(results, save_path=None):
     keys = sorted(results.keys())
@@ -223,7 +223,6 @@ def plot_boxplots(results, save_path=None):
     plt.figure(figsize=(12, 6))
     plt.boxplot(data, labels=labels, showfliers=False, medianprops={"linewidth": 2})
     plt.ylabel("Fisher–Rao forecast error")
-    plt.title("Forecast error distributions across 9 schemes")
     plt.grid(alpha=0.3)
 
     if save_path is not None:
@@ -242,24 +241,22 @@ def plot_phi_timelines(phi_series, phi_dates, save_path=None):
 
     ax.axhline(1.0, color="grey", linestyle="--", alpha=0.6)
     ax.set_ylabel("φ")
-    ax.set_title("φ for different estimation window sizes", pad=30)
     ax.grid(alpha=0.3)
-
     fig.legend(
         loc="upper center",
-        bbox_to_anchor=(0.5, 1.05),
+        bbox_to_anchor=(0.5, 1.1),
         ncol=3,
-        fontsize=12,
-        frameon=False
+        fontsize=16,
+        frameon=True,
+        framealpha=1,
+        edgecolor="black"
     )
-
     if save_path is not None:
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
-
     plt.show()
 
 
-def plot_all_predictions_3x5(pred_list, save_path=None):
+def plot_all_predictions_3x5(df, pred_list, prediction_windows, save_path=None):
     rows, cols = 3, 5
     D = np.linspace(0.01, 250, 400)
 
@@ -269,22 +266,47 @@ def plot_all_predictions_3x5(pred_list, save_path=None):
     legend_handles = {}
     panel = 0
 
-    for (mu_pred, sigma_pred, actual_params, actual_dates, dists, end_date) in pred_list:
+    for (mu_pred, sigma_pred, actual_params, actual_dates, dists, end_date), (start_date, window_size, k_steps) in zip(pred_list, prediction_windows):
+        subset = df[df["Date"] >= pd.to_datetime(start_date)].head(window_size)
+        mu_hat, _, _ = estimate_window(subset)
+
+        x_mu_hat, y_mu_hat = hyperboloid_to_upper(mu_hat.reshape(1, -1))
+        mu_est = x_mu_hat[0] * np.sqrt(2)
+        sigma_est = y_mu_hat[0]
+
+        pdf_mu_est = lognormal_pdf(D, mu_est, sigma_est)
+
         for i in range(5):
             ax = axes[panel]
+
             pdf_pred = lognormal_pdf(D, mu_pred[i], sigma_pred[i])
-            line_pred, = ax.plot(D, pdf_pred, "--", color="green", label="Predicted")
+            line_pred, = ax.plot(
+                D, pdf_pred,
+                "--", color="tab:red", linewidth=1.8,
+                label="Predicted"
+            )
+
+            line_mu_est, = ax.plot(
+                D, pdf_mu_est,
+                "-.", color="green", linewidth=2.6, alpha=1,
+                label=r"Mean density from $\widehat{\mu}_{est}$"
+            )
 
             muA, sA = actual_params[i]
             if muA is not None:
                 pdf_actual = lognormal_pdf(D, muA, sA)
-                line_actual, = ax.plot(D, pdf_actual, color="black", label="Observed")
+                line_actual, = ax.plot(
+                    D, pdf_actual,
+                    color="tab:blue", linewidth=1.8,
+                    label="Observed"
+                )
 
+            legend_handles[r"Mean density $\widehat{\mu}_{est}$"] = line_mu_est
             legend_handles["Predicted"] = line_pred
             if muA is not None:
                 legend_handles["Observed"] = line_actual
 
-            date_str = actual_dates[i].strftime("%Y-%m-%d") if actual_dates[i] is not None else f"step {i + 1}"
+            date_str = actual_dates[i].strftime("%d/%m/%Y") if actual_dates[i] is not None else f"step {i + 1}"
 
             if not np.isnan(dists[i]):
                 title_text = f"{date_str}\nFR Dist: {dists[i]:.3f}"
@@ -301,12 +323,15 @@ def plot_all_predictions_3x5(pred_list, save_path=None):
     fig.supxlabel("Diameter")
 
     fig.legend(
-        legend_handles.values(), legend_handles.keys(),
+        legend_handles.values(),
+        legend_handles.keys(),
         loc="upper center",
-        bbox_to_anchor=(0.5, 1.03),
-        ncol=2,
-        fontsize=12,
-        frameon=False
+        bbox_to_anchor=(0.5, 1.1),
+        ncol=3,
+        fontsize=16,
+        frameon=True,
+        framealpha=1,
+        edgecolor="black"
     )
 
     if save_path is not None:
@@ -329,7 +354,8 @@ def plot_geodesic(ax, x1, y1, x2, y2, **kwargs):
 def plot_upper_half_plane_predictions(df, prediction_windows, save_path=None):
     cols = len(prediction_windows)
     fig, axes = plt.subplots(1, cols, figsize=(18, 6), sharey=True, constrained_layout=True)
-    if cols == 1: axes = [axes]
+    if cols == 1:
+        axes = [axes]
 
     text_outline = [pe.withStroke(linewidth=3, foreground="white")]
     legend_handles = {}
@@ -340,68 +366,143 @@ def plot_upper_half_plane_predictions(df, prediction_windows, save_path=None):
         subset = df[df["Date"] >= start].head(window_size)
 
         mu_hat, phi_hat, last_point = estimate_window(subset)
-        end_date = subset["Date"].iloc[-1]
+
+        window_start = subset["Date"].iloc[0]
+        window_end = subset["Date"].iloc[-1]
+        end_date = window_end
+
+        x_mu_hat, y_mu_hat = hyperboloid_to_upper(mu_hat.reshape(1, -1))
+        x_mu_hat, y_mu_hat = x_mu_hat[0], y_mu_hat[0]
 
         preds = predict_k_steps(mu_hat, phi_hat, last_point, k_steps)
         x_pred, y_pred = hyperboloid_to_upper(preds)
 
         future = df[df["Date"] > end_date].head(k_steps)
         actual_params, _, _ = get_true_params_and_errors(future, preds, k_steps)
+
         valid_params = [p for p in actual_params if p[0] is not None]
         x_actual = np.array([p[0] / np.sqrt(2) for p in valid_params])
         y_actual = np.array([p[1] for p in valid_params])
 
-        all_y_ax = np.concatenate([y_pred, y_actual]) if len(x_actual) > 0 else y_pred
-        global_y_min, global_y_max = min(global_y_min, all_y_ax.min()), max(global_y_max, all_y_ax.max())
-        date_strs = future["Date"].dt.strftime('%b %d').tolist()
+        if len(x_actual) > 0:
+            all_y_ax = np.concatenate([y_pred, y_actual, [y_mu_hat]])
+        else:
+            all_y_ax = np.concatenate([y_pred, [y_mu_hat]])
+
+        global_y_min = min(global_y_min, all_y_ax.min())
+        global_y_max = max(global_y_max, all_y_ax.max())
+
+        date_strs = future["Date"].dt.strftime("%b %d").tolist()
 
         ax.axhline(0, color="black", linewidth=1.0, alpha=0.5)
 
         if len(x_actual) > 0:
-            ax.scatter(x_actual, y_actual, color="tab:blue", marker="o", s=70, zorder=5, label="Observed")
+            ax.scatter(
+                x_actual, y_actual,
+                color="tab:blue", marker="o", s=70,
+                zorder=5, label="Observed"
+            )
+
             for i in range(len(x_actual)):
                 y_offset = 15 if i % 2 == 0 else -20
                 ax.annotate(
                     date_strs[i], (x_actual[i], y_actual[i]),
                     xytext=(0, y_offset), textcoords="offset points",
-                    ha="center", va="center", fontsize=9, color="tab:blue",
-                    path_effects=text_outline, arrowprops=dict(arrowstyle="-", color="tab:blue", alpha=0.4, lw=1)
+                    ha="center", va="center",
+                    fontsize=9, color="tab:blue",
+                    path_effects=text_outline,
+                    arrowprops=dict(
+                        arrowstyle="-",
+                        color="tab:blue",
+                        alpha=0.4,
+                        lw=1
+                    )
                 )
 
-        ax.scatter(x_pred, y_pred, color="tab:red", marker="x", s=70, zorder=5, label="Predicted")
+        ax.scatter(
+            x_pred, y_pred,
+            color="tab:red", marker="x", s=70,
+            zorder=5, label="Predicted"
+        )
+
+        ax.scatter(
+            x_mu_hat, y_mu_hat,
+            color="green", marker="*", s=170,
+            zorder=6, label=r"$\widehat{\mu}_{est}$"
+        )
+
+        ax.text(
+            0.03, 0.95,
+            rf"$\widehat{{\phi}}_{{est}} = {phi_hat:.3f}$",
+            transform=ax.transAxes,
+            ha="left", va="top",
+            fontsize=11,
+            bbox=dict(
+                boxstyle="round,pad=0.3",
+                facecolor="white",
+                edgecolor="gray",
+                alpha=0.85
+            )
+        )
 
         for h in range(min(k_steps, len(x_actual))):
             lbl = "Geodesic error" if h == 0 else ""
-            plot_geodesic(ax, x_actual[h], y_actual[h], x_pred[h], y_pred[h],
-                          color="gray", linestyle="-", linewidth=1.5, alpha=0.7, label=lbl)
+            plot_geodesic(
+                ax,
+                x_actual[h], y_actual[h],
+                x_pred[h], y_pred[h],
+                color="gray",
+                linestyle="-",
+                linewidth=1.5,
+                alpha=0.7,
+                label=lbl
+            )
 
-        all_x = np.concatenate([x_pred, x_actual]) if len(x_actual) > 0 else x_pred
+        if len(x_actual) > 0:
+            all_x = np.concatenate([x_pred, x_actual, [x_mu_hat]])
+        else:
+            all_x = np.concatenate([x_pred, [x_mu_hat]])
+
         x_pad = 0.15 * (all_x.max() - all_x.min() + 1e-8)
         ax.set_xlim(all_x.min() - x_pad, all_x.max() + x_pad)
 
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
         ax.grid(alpha=0.2)
-        ax.set_title(f"End Window: {end_date.strftime('%Y-%m-%d')}", fontsize=12)
+
+        ax.set_title(
+            f"Estimation window: {window_start.strftime('%d/%m/%Y')} to {window_end.strftime('%d/%m/%Y')}",
+            fontsize=12
+        )
+
         ax.set_xlabel(r"$x=\mu/\sqrt{2}$")
 
-        if ax == axes[0]: ax.set_ylabel(r"$y=\sigma$")
+        if ax == axes[0]:
+            ax.set_ylabel(r"$y=\sigma$")
 
         h, l = ax.get_legend_handles_labels()
         for handle, label in zip(h, l):
-            if label not in legend_handles: legend_handles[label] = handle
+            if label not in legend_handles:
+                legend_handles[label] = handle
 
     y_pad = 0.15 * (global_y_max - global_y_min + 1e-8)
     axes[0].set_ylim(max(0, global_y_min - y_pad), global_y_max + y_pad)
 
     fig.legend(
-        legend_handles.values(), legend_handles.keys(),
-        loc="upper center", bbox_to_anchor=(0.5, 1.08),
-        ncol=3, fontsize=12, frameon=False
+        legend_handles.values(),
+        legend_handles.keys(),
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.1),
+        ncol=4,
+        fontsize=14,
+        frameon=True,
+        framealpha=1,
+        edgecolor="black"
     )
 
     if save_path is not None:
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
+
     plt.show()
 
 
@@ -441,7 +542,7 @@ if __name__ == "__main__":
         )
         pred_list.append((mp, sp, ap, ad, dists, ed))
 
-    plot_all_predictions_3x5(pred_list, save_path=pdf_path)
+    plot_all_predictions_3x5(main_data, pred_list, pdf_windows, save_path=pdf_path)
 
     # ----- 4) Upper half-plane prediction plots -----
     plot_upper_half_plane_predictions(main_data, pdf_windows, save_path=uhp_path)
